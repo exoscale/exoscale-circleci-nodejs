@@ -1,0 +1,64 @@
+version: 2
+
+defaults: &defaults
+  machine:
+    docker_layer_caching: true
+  environment:
+    - APP_VERSION: $CIRCLE_SHA1
+
+jobs:
+  test:
+    <<: *defaults
+    steps:
+      - checkout
+      - run: docker build -t $DOCKER_IMAGE .
+      - run: docker run -d --rm --name node_app $DOCKER_IMAGE
+      - run: docker exec -it node_app node test.js
+      - run: docker stop node_app
+
+  publish:
+    <<: *defaults
+    steps:
+      - checkout
+      - run: docker build -t $DOCKER_IMAGE .
+      - run: docker login -u $DOCKER_USER -p $DOCKER_PASS
+      - run: docker push $DOCKER_IMAGE
+
+  deploy:
+    <<: *defaults
+    steps:
+      - checkout
+      - run: echo $ID_RSA | base64 -d > id_rsa && chmod 400 id_rsa
+      - run: ssh -i id_rsa core@$VM_IP "DOCKER_IMAGE=$DOCKER_IMAGE CIRCLE_SHA1=$CIRCLE_SHA1 bash -s" < deploy.sh
+
+  smoke-test:
+    <<: *defaults
+    steps:
+      - run: |
+          docker run -it \
+                     -e APP_HOST=$VM_IP \
+                     -e APP_VERSION=$CIRCLE_SHA1 \
+                     $DOCKER_IMAGE \
+                     node test.js
+
+workflows:
+  version: 2
+  build-and-deploy:
+    jobs:
+      - test:
+          context: exoscale
+      - publish:
+          requires:
+            - test
+          context: exoscale
+          filters:
+            branches:
+              only: master
+      - deploy:
+          requires:
+            - publish
+          context: exoscale
+      - smoke-test:
+          requires:
+            - deploy
+          context: exoscale
